@@ -1,0 +1,20 @@
+-- Standardized member staging table.
+-- Source-specific values are converted into the canonical business model here.
+
+CREATE OR REPLACE TABLE STG_MEMBER (
+    member_id                VARCHAR(18) NOT NULL,
+    member_name              VARCHAR(255) NOT NULL,
+    enrollment_date          DATE NOT NULL,
+    last_flight_date         DATE,
+    tier_code                VARCHAR(5),
+    dob                      DATE,
+    country                  VARCHAR(5),
+    individual_or_corporate  VARCHAR(50),
+
+    age                      INTEGER,
+    stale_member              BOOLEAN,
+
+    source_file              VARCHAR(255) NOT NULL,
+    ingestion_batch_id       VARCHAR(100) NOT NULL,
+    ingestion_timestamp      TIMESTAMP_NTZ NOT NULL
+);
