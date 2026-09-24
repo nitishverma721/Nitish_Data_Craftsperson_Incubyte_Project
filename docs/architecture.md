@@ -315,3 +315,11 @@ Preserve -> Validate -> Standardize -> Transform -> Publish
 ```
 
 The raw layer provides traceability, the staging layer provides a consistent business model, and the target layer provides data that is ready for downstream consumption.
+
+## Raw Member Table
+
+The raw member table intentionally stores date fields as strings.
+
+This allows the ingestion layer to retain source records even when the source contains malformed values. Date conversion and validation are performed later in the staging layer.
+
+Source metadata such as the source file, ingestion batch ID, and ingestion timestamp is retained for traceability and operational troubleshooting.
