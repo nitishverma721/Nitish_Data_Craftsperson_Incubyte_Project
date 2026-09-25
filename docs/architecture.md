@@ -1,325 +1,143 @@
-# Data Pipeline Architecture
+# Data Engineering Architecture
 
 ## 1. Overview
 
-The solution follows a layered data pipeline design:
+The solution uses Python for source-file handling and orchestration, and Snowflake for storage and set-based transformation. It processes country-specific member spreadsheets and a semi-structured JSON redemption feed through separate raw and staging paths, then publishes current member targets and enriched redemption transactions.
+
+## 2. End-to-End Architecture
 
 ```mermaid
 flowchart TD
-    A[Source Files] --> B[Raw / Landing Layer]
-    B --> C[Staging Layer]
-    C --> D[Member Transformation]
-    C --> E[Data Validation]
-    D --> F[Latest Member Record]
-    F --> G[Country-specific Target Tables]
+    A[Member Excel Files] --> B[Python Member Ingestion]
+    B --> C[RAW_MEMBER]
+    C --> D[Member Staging SQL]
+    D --> E[STG_MEMBER]
+    C --> F[Batch Data Quality Validation]
+    F --> G[DQ_MEMBER_VALIDATION]
+    E --> H[Latest Record Wins]
+    H --> I[TGT_MEMBER_AUS]
+    H --> J[TGT_MEMBER_IND]
+    H --> K[TGT_MEMBER_USA]
 
-    H[JSON Feed] --> I[Raw Redemption Data]
-    I --> J[Flattened Redemption Transactions]
-    J --> K[Join with Member Profile]
+    L[Redemption JSON] --> M[Python JSON Ingestion]
+    M --> N[RAW_REDEMPTION]
+    N --> O[Snowflake LATERAL FLATTEN]
+    O --> P[STG_REDEMPTION]
+
+    I --> Q[Current Member Profiles]
+    J --> Q
+    K --> Q
+    P --> R[LEFT JOIN by member_id]
+    Q --> R
+    R --> S[TGT_MEMBER_REDEMPTION]
 ```
 
-## 2. Processing Layers
+## 3. Pipeline Layers
 
-### Raw / Landing Layer
+### Raw layer
 
-The raw layer stores data as close to the source representation as practical.
+Raw tables preserve source data and batch lineage:
 
-The purpose of this layer is to:
+- `RAW_MEMBER` stores canonical member fields. Raw date values are strings so malformed values remain available for validation.
+- `RAW_REDEMPTION` stores the original JSON payload in a Snowflake `VARIANT` column.
 
-- Preserve source data for traceability.
-- Support reprocessing when transformation logic changes.
-- Maintain source-file and ingestion metadata.
-- Prevent source issues from being silently hidden.
+Both paths retain source-file and ingestion metadata, including `ingestion_batch_id` and `ingestion_timestamp`.
 
-Typical audit columns include:
+### Staging layer
 
-- source_file
-- ingestion_timestamp
-- ingestion_batch_id
+The member staging transformation maps supported enrollment, flight, and DOB formats to dates; calculates completed age and the greater-than-90-days `stale_member` flag; and retains lineage columns. Rows missing member ID, member name, or a valid enrollment date are excluded from `STG_MEMBER`.
 
-The raw layer should be append-oriented so that previous loads can be traced.
+The redemption staging transformation uses `LATERAL FLATTEN` to emit one row per object in the JSON `redemptions` array. Feed and transaction dates are parsed from `YYYYMMDD` strings.
 
-### Staging Layer
+### Data quality layer
 
-The staging layer provides a standardized member structure across the different source formats.
+`DQ_MEMBER_VALIDATION` stores validation findings, not duplicate copies of source records. The Python runner selects the latest raw ingestion batch and executes validations against `RAW_MEMBER`, allowing records excluded from staging to remain visible.
 
-Source-specific column names are mapped into common business names.
+Current SQL rules cover missing member ID/name, missing or invalid enrollment date, invalid flight date, invalid or future DOB, enrollment after flight, and duplicate `(country, member_id)` keys within a batch. Findings retain batch and source-file lineage.
 
-Example:
+Country-code allow-list validation is not currently implemented. Re-running validation for the same batch can append duplicate findings; production operation should make that step idempotent, for example by replacing or merging findings for the batch.
 
-| Source Field | Canonical Field |
-|---|---|
-| Unique ID / ID | member_id |
-| Member Name / Name | member_name |
-| Tier Type / TierCode | tier_code |
-| Date of Birth / DOB | dob |
-| Date of Enrollment / EnrollmentDate | enrollment_date |
-| Date of Flight / Flight Date / FlightDate | last_flight_date |
+### Member target layer
 
-Additional derived fields are calculated in staging:
+`STG_MEMBER` is deduplicated using `ROW_NUMBER()` partitioned by `(member_id, member_name)`. The row with the latest `ingestion_timestamp` wins, with enrollment date and source file as tie-breakers. The winning row is routed to `TGT_MEMBER_AUS`, `TGT_MEMBER_IND`, or `TGT_MEMBER_USA` according to its country.
 
-- age
-- stale_member
+The country targets are cleared and rebuilt by the current load script, making a complete rerun deterministic for the current staged dataset.
 
-The staging layer is also where source values are standardized and validated.
+### Redemption/member target layer
 
-### Target Layer
+The current profile set is formed by `UNION ALL` over the three country targets. `STG_REDEMPTION` is left-joined to that set on `member_id`, and the result is written to `TGT_MEMBER_REDEMPTION`. The left join preserves transactions without a matching profile; profile attributes are then `NULL`.
 
-After validation and transformation, the latest member record is written to the appropriate country-specific target table.
+The redemption feed has no country or member name, while the sample country files reuse numeric IDs. Therefore, joining on `member_id` alone may be ambiguous or produce multiple matches if an ID exists in multiple country targets. The sample redemption ID (`223457`) has no current profile match, so its two transactions remain unmatched. Production use requires an authoritative cross-source member key, or enough redemption identity fields to disambiguate the profile.
 
-Examples:
+## 4. Latest Record Wins
 
-- target_member_india
-- target_member_australia
-- target_member_usa
-
-The target layer represents the current member state rather than every historical source record.
-
-## 3. Canonical Member Model
-
-The staging and target layers will use a common member model.
-
-| Column | Type | Description |
-|---|---|---|
-| member_id | VARCHAR(18) | Business identifier for the member |
-| member_name | VARCHAR(255) | Member name |
-| enrollment_date | DATE | Date the member enrolled |
-| last_flight_date | DATE | Most recent flight date available from the source |
-| tier_code | VARCHAR(5) | Member tier |
-| agent_name | VARCHAR(255) | Agent associated with the member |
-| state | VARCHAR(5) | State/region |
-| country | VARCHAR(5) | Standardized country code |
-| post_code | VARCHAR(10) | Postal code |
-| dob | DATE | Date of birth |
-| active_member | VARCHAR(1) | Active member indicator |
-| age | INTEGER | Derived age |
-| stale_member | BOOLEAN | Indicates whether flight is more than 90 days old |
-| source_file | VARCHAR(255) | Source file name |
-| ingestion_timestamp | TIMESTAMP | Time the record was ingested |
-| ingestion_batch_id | VARCHAR(100) | Identifier for the ingestion batch |
-
-Some attributes are not available in every source file. Missing optional attributes will be represented as NULL.
-
-## 4. Why Member ID Is Stored as VARCHAR
-
-Although the sample files contain numeric-looking IDs, the assessment defines Member ID as a VARCHAR field.
-
-The pipeline will therefore treat member_id as a business identifier rather than a numeric measure.
-
-This also avoids losing leading zeroes if they appear in future source data.
-
-## 5. Country Handling
-
-The assessment's source specification includes Country as a member attribute.
-
-The sample Excel files are country-specific and do not contain a country column.
-
-For these sample files, the ingestion configuration will associate:
-
-- AUS.xlsx -> AUS
-- IND.xlsx -> IND
-- USA.xlsx -> USA
-
-For the generic source feed described in the assessment, the Country field supplied by the source will be used.
-
-The country value will be standardized before loading the country-specific target.
-
-## 6. Latest Record Wins
-
-A member can appear in multiple source records and potentially move between countries.
-
-The target tables should contain the latest applicable record for that member.
-
-For example:
-
-| Member ID | Country | Last Flight Date |
-|---|---|---|
-| 1 | USA | 2021-12-30 |
-| 1 | AUS | 2022-08-01 |
-
-The AUS record is more recent and therefore becomes the current member record.
-
-The transformation will use a window function such as:
+The source specification has no authoritative update timestamp, so `ingestion_timestamp` is used as the recency indicator:
 
 ```sql
 ROW_NUMBER() OVER (
-    PARTITION BY member_id
-    ORDER BY last_flight_date DESC
+    PARTITION BY member_id, member_name
+    ORDER BY
+        ingestion_timestamp DESC,
+        enrollment_date DESC NULLS LAST,
+        source_file DESC
 )
 ```
 
-The record with `ROW_NUMBER() = 1` becomes the current record.
+This identity choice keeps different sample members with the same numeric ID and different names separate. It is an assessment assumption, not a substitute for confirming an immutable member key with the source-system owner. If an authoritative source update/effective timestamp becomes available, it should take precedence over ingestion time.
 
-If the business date is unavailable, the design should fall back to an appropriate source/ingestion timestamp rather than arbitrarily selecting a record.
+## 5. Redemption JSON Processing
 
-The exact fallback logic will be implemented in the transformation layer.
+A raw feed contains a member ID, feed date, and a nested array of redemption transactions. The original payload is retained in `RAW_REDEMPTION` as `VARIANT`. Snowflake `LATERAL FLATTEN` converts each array element into a transaction row in `STG_REDEMPTION`, including transaction ID/date, partner, miles, and status.
 
-## 7. Age Calculation
+For the supplied sample, one raw JSON payload contains two redemptions and produces two staging rows.
 
-Age will be derived from Date of Birth.
+## 6. Python and Snowflake Responsibilities
 
-The calculation should consider whether the member has already had their birthday in the current year rather than simply subtracting the birth year from the current year.
+Python handles file reading, source configuration, batch IDs, logging, invoking SQL, and transaction/error orchestration. Snowflake handles date conversion, derived fields, validation queries, window functions, JSON flattening, country routing, and joins. Keeping data-intensive work in Snowflake avoids transferring large datasets through Python.
 
-If DOB is unavailable, age will remain NULL.
+## 7. Error Handling and Lineage
 
-Invalid DOB values will be captured by data-quality validation.
+Loaders log progress and failures, commit successful database operations, roll back on exceptions where supported, and re-raise errors. Raw data and metadata support investigation and replay. Snowflake DDL can commit independently of DML transactions, so rollback should not be assumed to undo table creation or replacement.
 
-## 8. Stale Member Calculation
+## 8. Testing Strategy
 
-A member is considered stale when the number of days since the available Last Flight Date is greater than 90 days.
+Local tests cover source mappings, supported and invalid date values, age/staleness calculations, date sequencing, latest-record selection, and matched/unmatched redemption joins. Snowflake verification queries are also required to validate actual table counts and contents; unit tests do not execute or prove the Snowflake SQL itself.
 
-Conceptually:
+Run local tests with:
 
-```text
-Current Date - Last Flight Date > 90
+```powershell
+python -m pytest -q
 ```
 
-Result:
+## 9. Scalability and Production Considerations
 
-```text
-TRUE  -> stale member
-FALSE -> active from a flight-recency perspective
-NULL  -> no flight date available
+The assessment discusses very high daily volumes. The current implementation demonstrates the transformations on small Excel/JSON samples; it is not a billion-row ingestion implementation. Scaling it appropriately would require:
+
+- Incremental ingestion and batch-scoped processing rather than rescanning historical data.
+- Cloud/object storage staging and Snowflake bulk loading (for example, `COPY INTO`) instead of row-wise Python inserts.
+- Idempotent `MERGE` or batch replacement strategies for raw, DQ, and curated outputs.
+- Warehouse sizing and workload isolation based on measured query demand.
+- Monitoring query history, load counts, rejected records, and warehouse utilization.
+- Clustering only when measured access patterns and data volume justify its maintenance cost.
+- Retaining only required columns through each transformation and limiting reprocessing to new or changed data.
+
+The country targets and redemption staging/target scripts currently clear and rebuild their outputs. This is simple and repeatable for the assessment sample but should be replaced with incremental strategies at production scale.
+
+## 10. Data Lineage
+
+```mermaid
+flowchart LR
+    A[Member Files] --> B[RAW_MEMBER]
+    B --> C[STG_MEMBER]
+    B --> D[DQ_MEMBER_VALIDATION]
+    C --> E[Country Targets]
+    E --> F[Current Member Profiles]
+    G[Redemption JSON] --> H[RAW_REDEMPTION]
+    H --> I[STG_REDEMPTION]
+    F --> J[TGT_MEMBER_REDEMPTION]
+    I --> J
 ```
 
-The implementation will avoid treating a missing flight date as automatically stale.
+## 11. Implemented Scope
 
-## 9. Redemption Processing
-
-The redemption feed contains a member_id and a nested list of redemption transactions.
-
-The JSON structure will be flattened into one row per redemption transaction.
-
-Example:
-
-```text
-member_id
-feed_date
-txn_id
-txn_date
-partner
-miles_redeemed
-status
-```
-
-The transaction identifier (`txn_id`) will be treated as the transaction-level key.
-
-The flattened redemption table can then be joined to the member profile using:
-
-```text
-redemption.member_id = member.member_id
-```
-
-This keeps member attributes and transaction-level attributes separate and avoids duplicating the member profile unnecessarily.
-
-## 10. Data Quality Strategy
-
-The pipeline will perform validation for:
-
-### Mandatory fields
-
-- member_name
-- member_id
-- enrollment_date
-
-### Key uniqueness
-
-- member_id uniqueness within the applicable current-member dataset
-- txn_id uniqueness within redemption transactions
-
-### Date validation
-
-- valid date format
-- enrollment date should not contain impossible calendar values
-- DOB should not be in the future
-- flight date should be checked against relevant business dates
-
-### Data consistency
-
-Examples include:
-
-- unexpected country codes
-- unsupported tier codes
-- invalid active-member flags
-- invalid member identifiers
-- duplicate records
-- inconsistent records across country files
-
-### Traceability
-
-Invalid records should not disappear silently.
-
-They should be identifiable using source metadata such as:
-
-- source_file
-- ingestion_batch_id
-- ingestion_timestamp
-
-## 11. Handling Invalid Records
-
-The pipeline should distinguish between:
-
-1. Valid records that can continue through the pipeline.
-2. Invalid records that should be rejected or quarantined.
-3. Valid records with missing optional attributes.
-
-For example, an invalid date such as:
-
-```text
-2021-13-13
-```
-
-should not be silently converted to another date.
-
-The original source record should remain traceable so that the issue can be investigated or corrected at the source.
-
-## 12. Scalability Considerations
-
-The assessment states that the process should consider billions of records per day.
-
-The design therefore favors:
-
-- Set-based SQL transformations.
-- Incremental processing instead of unnecessary full reloads.
-- Append-oriented raw ingestion.
-- Efficient deduplication using window functions.
-- Processing only required columns.
-- Bulk file loading.
-- Separate validation/error handling.
-- Idempotent processing where possible.
-- Audit metadata for operational traceability.
-
-Country-specific target tables should be populated from the deduplicated current-member dataset rather than repeatedly scanning the raw source.
-
-## 13. Operational Logging
-
-The Python processing layer will use structured application logging for operational events such as:
-
-- Starting a file ingestion.
-- Number of records read.
-- Number of valid records.
-- Number of rejected records.
-- Number of duplicate records.
-- Transformation completion.
-- Redemption records processed.
-- Processing failures.
-
-Logging should provide enough information to troubleshoot a batch without exposing sensitive member information unnecessarily.
-
-## 14. Design Principle
-
-The main principle of the pipeline is:
-
-```text
-Preserve -> Validate -> Standardize -> Transform -> Publish
-```
-
-The raw layer provides traceability, the staging layer provides a consistent business model, and the target layer provides data that is ready for downstream consumption.
-
-## Raw Member Table
-
-The raw member table intentionally stores date fields as strings.
-
-This allows the ingestion layer to retain source records even when the source contains malformed values. Date conversion and validation are performed later in the staging layer.
-
-Source metadata such as the source file, ingestion batch ID, and ingestion timestamp is retained for traceability and operational troubleshooting.
+The project demonstrates configuration-driven member ingestion, raw source preservation, member staging and derived attributes, batch-aware DQ SQL, latest-record country targets, JSON raw ingestion and flattening, member/redemption enrichment, local tests, and Snowflake orchestration from Python.
