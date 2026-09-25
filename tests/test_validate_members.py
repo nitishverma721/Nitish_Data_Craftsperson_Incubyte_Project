@@ -16,6 +16,14 @@ def test_valid_enrollment_date():
     assert is_valid_date("2022-05-11") is True
 
 
+def test_assessment_yyyy_mm_dd_compact_date():
+    assert is_valid_date("20101012") is True
+
+
+def test_assessment_dob_compact_date():
+    assert is_valid_date("03051985") is True
+
+
 def test_missing_enrollment_date():
     assert is_valid_date(None) is False
 

@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE DQ_MEMBER_VALIDATION (
+CREATE TABLE IF NOT EXISTS DQ_MEMBER_VALIDATION (
     validation_id       VARCHAR(36) NOT NULL,
     member_id           VARCHAR(18),
     member_name         VARCHAR(255),

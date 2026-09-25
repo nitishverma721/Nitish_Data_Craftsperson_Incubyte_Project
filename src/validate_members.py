@@ -2,8 +2,6 @@ import logging
 from datetime import date, datetime
 from pathlib import Path
 
-from src.snowflake_connection import get_snowflake_connection
-
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,6 +10,7 @@ SQL_FILE = PROJECT_ROOT / "sql" / "05_validate_members.sql"
 SUPPORTED_DATE_FORMATS = (
     "%Y-%m-%d",
     "%Y-%m-%d %H:%M:%S",
+    "%Y%m%d",
     "%m%d%Y",
 )
 
@@ -52,6 +51,8 @@ def configure_logging() -> None:
 
 
 def validate_members() -> None:
+    from src.snowflake_connection import get_snowflake_connection
+
     logger.info("Starting member data quality validation.")
 
     if not SQL_FILE.exists():
@@ -63,9 +64,10 @@ def validate_members() -> None:
         try:
             cursor.execute(
                 """
-                SELECT DISTINCT ingestion_batch_id
+                SELECT ingestion_batch_id
                 FROM RAW_MEMBER
-                ORDER BY ingestion_batch_id DESC
+                GROUP BY ingestion_batch_id
+                ORDER BY MAX(ingestion_timestamp) DESC
                 LIMIT 1
                 """
             )
@@ -81,6 +83,12 @@ def validate_members() -> None:
             logger.info(
                 "Validating member ingestion batch: %s",
                 batch_id,
+            )
+
+            cursor.execute(
+                "DELETE FROM DQ_MEMBER_VALIDATION "
+                "WHERE ingestion_batch_id = %s",
+                (batch_id,),
             )
 
             validation_sql = SQL_FILE.read_text(encoding="utf-8")

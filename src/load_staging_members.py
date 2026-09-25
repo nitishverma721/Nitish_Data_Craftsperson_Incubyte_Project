@@ -16,7 +16,7 @@ def configure_logging() -> None:
     )
 
 
-def load_staging_members() -> None:
+def load_staging_members(batch_id: str | None = None) -> None:
     logger.info("Starting RAW_MEMBER to STG_MEMBER transformation.")
 
     if not SQL_FILE.exists():
@@ -28,7 +28,28 @@ def load_staging_members() -> None:
         cursor = connection.cursor()
 
         try:
-            cursor.execute(transformation_sql)
+            if batch_id is None:
+                cursor.execute(
+                    """
+                    SELECT ingestion_batch_id
+                    FROM RAW_MEMBER
+                    GROUP BY ingestion_batch_id
+                    ORDER BY MAX(ingestion_timestamp) DESC
+                    LIMIT 1
+                    """
+                )
+                result = cursor.fetchone()
+                if not result:
+                    logger.warning("No member records found in RAW_MEMBER.")
+                    return
+                batch_id = result[0]
+
+            logger.info("Transforming member batch: %s", batch_id)
+            batch_sql = transformation_sql.replace("{batch_id}", batch_id)
+            for statement in batch_sql.split(";"):
+                statement = statement.strip()
+                if statement:
+                    cursor.execute(statement)
             connection.commit()
 
             logger.info("RAW_MEMBER to STG_MEMBER transformation completed.")

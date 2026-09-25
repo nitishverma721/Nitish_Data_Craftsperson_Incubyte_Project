@@ -66,6 +66,7 @@ WHERE ingestion_batch_id = '{batch_id}'
       OR COALESCE(
           TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD'),
           TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+          TRY_TO_DATE(enrollment_date_raw, 'YYYYMMDD'),
           TRY_TO_DATE(enrollment_date_raw, 'MMDDYYYY')
       ) IS NULL
   )
@@ -89,6 +90,8 @@ WHERE ingestion_batch_id = '{batch_id}'
   AND last_flight_date_raw IS NOT NULL
   AND COALESCE(
       TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD'),
+      TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+      TRY_TO_DATE(last_flight_date_raw, 'YYYYMMDD'),
       TRY_TO_DATE(last_flight_date_raw, 'MMDDYYYY')
   ) IS NULL
 
@@ -109,7 +112,12 @@ SELECT
 FROM RAW_MEMBER
 WHERE ingestion_batch_id = '{batch_id}'
   AND dob_raw IS NOT NULL
-  AND TRY_TO_DATE(dob_raw, 'YYYY-MM-DD') IS NULL
+    AND COALESCE(
+            TRY_TO_DATE(dob_raw, 'YYYY-MM-DD'),
+            TRY_TO_DATE(dob_raw, 'YYYY-MM-DD HH24:MI:SS'),
+            TRY_TO_DATE(dob_raw, 'YYYYMMDD'),
+            TRY_TO_DATE(dob_raw, 'MMDDYYYY')
+    ) IS NULL
 
 UNION ALL
 
@@ -127,7 +135,12 @@ SELECT
     'Date of birth cannot be in the future'
 FROM RAW_MEMBER
 WHERE ingestion_batch_id = '{batch_id}'
-  AND TRY_TO_DATE(dob_raw, 'YYYY-MM-DD') > CURRENT_DATE()
+    AND COALESCE(
+            TRY_TO_DATE(dob_raw, 'YYYY-MM-DD'),
+            TRY_TO_DATE(dob_raw, 'YYYY-MM-DD HH24:MI:SS'),
+            TRY_TO_DATE(dob_raw, 'YYYYMMDD'),
+            TRY_TO_DATE(dob_raw, 'MMDDYYYY')
+    ) > CURRENT_DATE()
 
 UNION ALL
 
@@ -148,22 +161,77 @@ WHERE ingestion_batch_id = '{batch_id}'
   AND COALESCE(
       TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD'),
       TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+    TRY_TO_DATE(enrollment_date_raw, 'YYYYMMDD'),
       TRY_TO_DATE(enrollment_date_raw, 'MMDDYYYY')
   ) IS NOT NULL
   AND COALESCE(
       TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD'),
+    TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+    TRY_TO_DATE(last_flight_date_raw, 'YYYYMMDD'),
       TRY_TO_DATE(last_flight_date_raw, 'MMDDYYYY')
   ) IS NOT NULL
   AND COALESCE(
       TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD'),
       TRY_TO_DATE(enrollment_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+    TRY_TO_DATE(enrollment_date_raw, 'YYYYMMDD'),
       TRY_TO_DATE(enrollment_date_raw, 'MMDDYYYY')
   )
   >
   COALESCE(
       TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD'),
+            TRY_TO_DATE(last_flight_date_raw, 'YYYY-MM-DD HH24:MI:SS'),
+            TRY_TO_DATE(last_flight_date_raw, 'YYYYMMDD'),
       TRY_TO_DATE(last_flight_date_raw, 'MMDDYYYY')
   )
+
+UNION ALL
+
+-- Country must be present and supported by a country target.
+SELECT
+        UUID_STRING(),
+        member_id,
+        member_name,
+        country,
+        source_file,
+        ingestion_batch_id,
+        'INVALID_COUNTRY',
+        'ERROR',
+        'FAILED',
+        'Country is missing or unsupported'
+FROM RAW_MEMBER
+WHERE ingestion_batch_id = '{batch_id}'
+    AND (
+            country IS NULL
+            OR TRIM(country) = ''
+            OR UPPER(TRIM(country)) NOT IN ('AUS', 'IND', 'USA', 'PHIL', 'CAN')
+    )
+
+UNION ALL
+
+-- Member Name is marked as the key in the assessment.
+SELECT
+        UUID_STRING(),
+    member_id,
+        member_name,
+        country,
+    source_file,
+        ingestion_batch_id,
+        'DUPLICATE_MEMBER_NAME_KEY',
+        'ERROR',
+        'FAILED',
+        'Duplicate member name found within the ingestion batch'
+FROM (
+    SELECT
+        *,
+        COUNT(*) OVER (
+            PARTITION BY UPPER(TRIM(member_name)), ingestion_batch_id
+        ) AS member_name_count
+    FROM RAW_MEMBER
+    WHERE ingestion_batch_id = '{batch_id}'
+    AND member_name IS NOT NULL
+    AND TRIM(member_name) <> ''
+) AS MEMBER_NAME_KEYS
+WHERE member_name_count > 1
 
 UNION ALL
 
@@ -181,6 +249,7 @@ SELECT
     'Duplicate member ID found for the same country'
 FROM RAW_MEMBER
 WHERE ingestion_batch_id = '{batch_id}'
+    AND member_id IS NOT NULL
 GROUP BY
     member_id,
     country,
