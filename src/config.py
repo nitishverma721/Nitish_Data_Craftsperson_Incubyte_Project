@@ -3,6 +3,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ASSESSMENT_DIR = PROJECT_ROOT / "assessment"
 
+COUNTRY_CODE_ALIASES = {
+    "AU": "AUS",
+}
+
+SUPPORTED_COUNTRIES = {"AUS", "IND", "USA", "PHIL", "CAN"}
+
 SOURCE_CONFIG = {
     "AUS.xlsx": {
         "country": "AUS",

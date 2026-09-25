@@ -1,4 +1,6 @@
+import argparse
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -13,7 +15,11 @@ RAW_VALUE_COLUMNS = {
     "enrollment_date_raw",
     "last_flight_date_raw",
     "tier_code",
+    "agent_name",
+    "state",
+    "post_code_raw",
     "dob_raw",
+    "active_member",
     "country",
     "individual_or_corporate",
 }
@@ -25,7 +31,11 @@ INSERT INTO RAW_MEMBER (
     enrollment_date_raw,
     last_flight_date_raw,
     tier_code,
+    agent_name,
+    state,
+    post_code_raw,
     dob_raw,
+    active_member,
     country,
     individual_or_corporate,
     source_file,
@@ -33,7 +43,7 @@ INSERT INTO RAW_MEMBER (
     ingestion_timestamp
 )
 VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
 )
 """
 
@@ -62,8 +72,8 @@ def configure_logging() -> None:
     )
 
 
-def load_raw_members() -> None:
-    dataframe = load_member_files()
+def load_raw_members(source_files: list[Path] | None = None) -> None:
+    dataframe = load_member_files(source_files)
 
     records = [
         tuple(
@@ -75,10 +85,20 @@ def load_raw_members() -> None:
 
     logger.info("Loading %d member records into RAW_MEMBER", len(records))
 
+    if not records:
+        logger.warning("No member records were produced; skipping RAW_MEMBER load.")
+        return
+
+    batch_id = dataframe["ingestion_batch_id"].iloc[0]
+
     with get_snowflake_connection() as connection:
         cursor = connection.cursor()
 
         try:
+            cursor.execute(
+                "DELETE FROM RAW_MEMBER WHERE ingestion_batch_id = %s",
+                (batch_id,),
+            )
             cursor.executemany(INSERT_SQL, records)
             connection.commit()
 
@@ -96,4 +116,12 @@ def load_raw_members() -> None:
 
 if __name__ == "__main__":
     configure_logging()
-    load_raw_members()
+    parser = argparse.ArgumentParser(description="Load member source files to RAW_MEMBER.")
+    parser.add_argument(
+        "--source-file",
+        action="append",
+        type=Path,
+        help="Member XLSX or pipe-delimited file; may be supplied multiple times.",
+    )
+    arguments = parser.parse_args()
+    load_raw_members(arguments.source_file)

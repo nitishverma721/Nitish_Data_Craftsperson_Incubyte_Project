@@ -43,6 +43,7 @@ def get_snowflake_connection():
         warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
         database=os.environ["SNOWFLAKE_DATABASE"],
         schema=os.environ["SNOWFLAKE_SCHEMA"],
+        autocommit=False,
     )
 
     try:
