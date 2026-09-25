@@ -6,7 +6,7 @@ A data engineering solution for the Incubyte Data Craftsperson assessment. It pr
 
 ```mermaid
 flowchart LR
-    A[Member Files] --> B[Python Ingestion]
+    A[Excel or Pipe Member Files] --> B[Python Ingestion]
     B --> C[RAW_MEMBER]
     C --> D[STG_MEMBER]
     C --> E[DQ Validation]
@@ -14,6 +14,8 @@ flowchart LR
     F --> G[AUS Target]
     F --> H[IND Target]
     F --> I[USA Target]
+    F --> Q[PHIL Target]
+    F --> R[CAN Target]
 
     J[Redemption JSON] --> K[RAW_REDEMPTION]
     K --> L[Snowflake FLATTEN]
@@ -21,6 +23,8 @@ flowchart LR
     G --> N[Current Member Profiles]
     H --> N
     I --> N
+    Q --> N
+    R --> N
     M --> O[LEFT JOIN]
     N --> O
     O --> P[TGT_MEMBER_REDEMPTION]
@@ -44,17 +48,20 @@ docs/           Architecture and design documentation
 
 **Data quality:** `DQ_MEMBER_VALIDATION`
 
-**Targets:** `TGT_MEMBER_AUS`, `TGT_MEMBER_IND`, `TGT_MEMBER_USA`, `TGT_MEMBER_REDEMPTION`
+**Targets:** `TGT_MEMBER_AUS`, `TGT_MEMBER_IND`, `TGT_MEMBER_USA`, `TGT_MEMBER_PHIL`, `TGT_MEMBER_CAN`, `TGT_MEMBER_REDEMPTION`
 
 ## Key Transformations
 
 ### Member data
 
 - Map country-specific source columns into a canonical member structure.
-- Preserve raw date values, then parse supported formats in Snowflake.
+- Parse both supplied Excel workbooks and the assessment's pipe-delimited header/detail format.
+- Carry member name, ID, dates, tier, agent, state, post code, active flag, and country through raw and staging schemas.
+- Preserve raw date values, then parse ISO, timestamp-like, `YYYYMMDD`, and `MMDDYYYY` formats in Snowflake.
 - Calculate completed age and whether the last flight was more than 90 days ago.
 - Validate raw records and retain findings with batch/source lineage.
-- Select the latest staged record per `(member_id, member_name)` and route it by country.
+- Validate country values and the PDF-declared member-name key, while reporting the key conflict in the sample.
+- Quarantine same-batch duplicate Member Names and select the latest staged record per normalized `member_name` before routing by country. The workbook sample's current targets contain 6 rows because both duplicate `Mike` rows and Jonnathan's invalid enrollment are excluded.
 
 ### Redemption data
 
@@ -62,7 +69,7 @@ docs/           Architecture and design documentation
 - Flatten the nested array into one row per transaction with `LATERAL FLATTEN`.
 - Left-join transactions to current profiles so unmatched redemptions are retained.
 
-The redemption feed contains only `member_id`; duplicate numeric IDs across countries can make a profile join ambiguous. See [docs/design_decisions.md](docs/design_decisions.md) for this and other assumptions/limitations.
+The redemption feed contains only `member_id`; a profile is attached only when that ID is unique across all country targets. Missing or ambiguous matches retain the transaction with null profile fields. See [docs/design_decisions.md](docs/design_decisions.md) for the sample key conflict and assumptions.
 
 ## Environment Setup
 
@@ -99,9 +106,15 @@ python -m src.flatten_redemptions
 python -m src.build_member_redemptions
 ```
 
-Run setup DDL in dependency order: `01_raw_member.sql`, `02_staging_member.sql`, `04_member_dq_validation.sql`, `06_country_target_tables.sql`, `08_raw_redemption.sql`, and `09_staging_redemption.sql`. The Python staging, DQ, country-target, flattening, and member-redemption runners execute their corresponding transformation SQL files.
+For the assessment's pipe-delimited member feed, pass one or more file paths to the raw loader:
 
-Loaders that append raw data can insert another batch when rerun. Curated target scripts currently clear and rebuild their output. Check the Snowflake table counts and records after execution; local unit tests do not execute the Snowflake SQL.
+```powershell
+python -m src.load_raw_members --source-file path\to\member_feed.txt
+```
+
+Run setup DDL in dependency order: `01_raw_member.sql`, `02_staging_member.sql`, `04_member_dq_validation.sql`, `06_country_target_tables.sql`, `08_raw_redemption.sql`, and `09_staging_redemption.sql`. For an existing Snowflake deployment created before the expanded assessment schema, run `12_member_schema_migration.sql` before loading new batches. The Python staging, DQ, country-target, flattening, and member-redemption runners execute their corresponding transformation SQL files.
+
+Member and redemption raw loaders use content-derived batch IDs and replace the same logical feed on retry. Curated target scripts currently clear and rebuild their output inside explicit DML transactions. Check Snowflake table counts and records after execution; local unit tests do not execute the Snowflake SQL. The implementation demonstrates sample processing, not a benchmarked billions-of-records-per-day deployment; see the architecture documentation for scale-out requirements.
 
 ## Design Principles
 

@@ -6,17 +6,17 @@ Member and redemption data are first written to raw tables. This retains origina
 
 ## 2. Parse Dates After Landing
 
-The Excel sources use different representations, including ISO dates, timestamp-like values, and compact `MMDDYYYY` values. The member raw table therefore stores date values as strings. Staging and validation attempt explicit supported formats. Invalid values, such as `2021-13-13`, are not guessed or silently corrected.
+The Excel and assessment pipe-file sources use different representations, including ISO dates, timestamp-like values, `YYYYMMDD`, and compact `MMDDYYYY` values. The member raw table therefore stores date values as strings. Staging and validation attempt explicit supported formats. Invalid values, such as `2021-13-13`, are not guessed or silently corrected.
 
 ## 3. Map Country from Source Configuration
 
-The sample country files do not provide a common country field. The ingestion configuration associates `AUS.xlsx`, `IND.xlsx`, and `USA.xlsx` with their respective country codes. Country mapping is kept in configuration rather than repeated in each ingestion path.
+The supplied Excel files do not provide a country field, so configuration associates `AUS.xlsx`, `IND.xlsx`, and `USA.xlsx` with their respective codes. The assessment pipe file supplies Country; its `AU` value is normalized to `AUS`. The target set supports AUS, IND, USA, PHIL, and CAN.
 
 ## 4. Member Identity and Key Assumptions
 
-Sample files reuse numeric IDs for different people across countries. Latest-record selection currently identifies a member by `(member_id, member_name)`, while DQ checks source-level uniqueness using `(country, member_id)`. These are assessment assumptions; production identity rules should be confirmed with the source owner and based on an immutable cross-source identifier.
+The PDF marks Member Name as the key and Member ID as non-key. Latest-target selection therefore uses normalized Member Name. The Excel files repeat `Mike` across countries with different IDs; both same-batch rows are recorded as DQ errors and excluded from staging and country targets rather than merged or arbitrarily selected. Target rebuilding also filters names flagged by the latest DQ batch so older staged history cannot reintroduce them. If they are different people, the source owner must provide an immutable global key before either can be safely promoted.
 
-Redemption data contains only `member_id`. The current profile join uses that field, so reused IDs across country targets can be ambiguous and may multiply redemption rows. Production integration should supply a globally unique key or additional matching attributes such as country.
+Redemption data contains only `member_id`. The current profile join enriches only IDs unique across the country targets. Missing or ambiguous profiles leave one redemption row with null profile fields. Production integration should supply a globally unique key or additional matching attributes such as country.
 
 ## 5. Latest Record Wins
 
@@ -26,7 +26,7 @@ No authoritative source update timestamp is supplied. `ingestion_timestamp` is u
 
 The raw layer is the source of truth for values requiring investigation. DQ rules run against `RAW_MEMBER` so that a record filtered from `STG_MEMBER` can still be reported. Staging currently requires member ID, member name, and a parseable enrollment date.
 
-The implemented DQ SQL checks mandatory ID/name, enrollment validity, flight-date validity, DOB validity/future DOB, enrollment/flight order, and duplicate country/member keys. An allowed-country list is not yet enforced. Validation is scoped to the latest batch, but repeated runs for one batch can append duplicate findings; a production validator should replace or merge that batch's results idempotently.
+The implemented DQ SQL checks mandatory ID/name, enrollment validity, flight-date validity, DOB validity/future DOB, enrollment/flight order, supported country codes, assessment-declared member-name uniqueness, and duplicate country/member ID keys. Validation selects the newest batch by ingestion timestamp and deletes prior findings for that batch before inserting new findings.
 
 ## 7. Left Join for Redemption Enrichment
 
@@ -38,7 +38,7 @@ Python handles source-file access, configuration, batch metadata, logging, and S
 
 ## 9. Repeatability and Idempotency
 
-Country member targets, redemption staging, and the member/redemption target are cleared and rebuilt by their current scripts. This makes those outputs repeatable for a full refresh. Raw loaders append new batches, and the DQ insert can append duplicate findings if rerun for the same batch. These sample-oriented behaviors need batch-keyed `MERGE` or controlled batch replacement before unattended production scheduling.
+Country member targets, redemption staging, and the member/redemption target are cleared and rebuilt by their current scripts using DML deletes under explicit non-autocommit transactions. Member raw and staging loads use content-derived batch IDs and replace the same batch on retry; redemption raw loading follows the same pattern and replaces a matching source/member/feed-date payload from an earlier run. DQ findings for the selected batch are replaced before validation. These full-refresh target strategies are repeatable for the sample but should become incremental batch-keyed merges at production scale.
 
 ## 10. Testing and Verification
 
@@ -50,10 +50,11 @@ The assessment describes millions or billions of records per day, while the supp
 
 ## 12. Assumptions
 
-1. Source file identifies the country when the source row does not contain country.
+1. Source file identifies country for country-specific Excel files; pipe-file country codes are normalized (`AU` to `AUS`).
 2. Ingestion timestamp is the available proxy for record recency.
-3. `(member_id, member_name)` distinguishes sample members for latest-record logic.
-4. `(country, member_id)` is the source-level duplicate key within an ingestion batch.
-5. Redemption transaction ID identifies a transaction.
-6. Missing optional member attributes are represented as `NULL`.
-7. The redemption-to-member join is performed on member ID for the assessment sample, subject to the ambiguity limitation above.
+3. Normalized Member Name is the assessment key for latest-target logic.
+4. Same-batch duplicate Member Names are excluded from staging and current targets; raw records and DQ findings remain for investigation.
+5. `(country, member_id)` is additionally checked as a source-level duplicate key within an ingestion batch.
+6. Redemption transaction ID identifies a transaction.
+7. Missing optional member attributes are represented as `NULL`.
+8. The redemption-to-member join enriches only globally unique member IDs; unmatched or ambiguous transactions are retained with null profile attributes.
