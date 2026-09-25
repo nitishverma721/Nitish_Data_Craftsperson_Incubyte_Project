@@ -1,23 +1,6 @@
 import pandas as pd
 
-
-def build_member_redemption_join(
-    redemptions: pd.DataFrame,
-    members: pd.DataFrame,
-) -> pd.DataFrame:
-    """Enrich redemption records with the current member profile."""
-    return redemptions.merge(
-        members[
-            [
-                "member_id",
-                "member_name",
-                "country",
-                "tier_code",
-            ]
-        ],
-        on="member_id",
-        how="left",
-    )
+from src.redemption_transform import build_member_redemption_join
 
 
 def test_redemption_is_enriched_with_member_profile():
@@ -76,4 +59,39 @@ def test_unmatched_redemption_is_not_dropped():
 
     assert len(result) == 1
     assert result.iloc[0]["member_id"] == "999"
+    assert pd.isna(result.iloc[0]["member_name"])
+
+
+def test_ambiguous_member_id_does_not_duplicate_redemption():
+    redemptions = pd.DataFrame(
+        [
+            {
+                "member_id": "1",
+                "transaction_id": "TX1003",
+                "miles_redeemed": 2000,
+            }
+        ]
+    )
+
+    members = pd.DataFrame(
+        [
+            {
+                "member_id": "1",
+                "member_name": "Mike",
+                "country": "AUS",
+                "tier_code": "GLD",
+            },
+            {
+                "member_id": "1",
+                "member_name": "Vikas",
+                "country": "IND",
+                "tier_code": "SLV",
+            },
+        ]
+    )
+
+    result = build_member_redemption_join(redemptions, members)
+
+    assert len(result) == 1
+    assert result.iloc[0]["transaction_id"] == "TX1003"
     assert pd.isna(result.iloc[0]["member_name"])

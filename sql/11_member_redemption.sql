@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE TGT_MEMBER_REDEMPTION (
+CREATE TABLE IF NOT EXISTS TGT_MEMBER_REDEMPTION (
     member_id           VARCHAR(18) NOT NULL,
     member_name         VARCHAR(255),
     country             VARCHAR(5),
@@ -14,7 +14,7 @@ CREATE OR REPLACE TABLE TGT_MEMBER_REDEMPTION (
     ingestion_timestamp TIMESTAMP_NTZ NOT NULL
 );
 
-TRUNCATE TABLE TGT_MEMBER_REDEMPTION;
+DELETE FROM TGT_MEMBER_REDEMPTION;
 
 INSERT INTO TGT_MEMBER_REDEMPTION (
     member_id,
@@ -34,28 +34,22 @@ INSERT INTO TGT_MEMBER_REDEMPTION (
 WITH CURRENT_MEMBERS AS (
     SELECT
         member_id,
-        member_name,
-        country,
-        tier_code
-    FROM TGT_MEMBER_AUS
-
-    UNION ALL
-
-    SELECT
-        member_id,
-        member_name,
-        country,
-        tier_code
-    FROM TGT_MEMBER_IND
-
-    UNION ALL
-
-    SELECT
-        member_id,
-        member_name,
-        country,
-        tier_code
-    FROM TGT_MEMBER_USA
+        MAX(member_name) AS member_name,
+        MAX(country) AS country,
+        MAX(tier_code) AS tier_code
+    FROM (
+        SELECT member_id, member_name, country, tier_code FROM TGT_MEMBER_AUS
+        UNION ALL
+        SELECT member_id, member_name, country, tier_code FROM TGT_MEMBER_IND
+        UNION ALL
+        SELECT member_id, member_name, country, tier_code FROM TGT_MEMBER_USA
+        UNION ALL
+        SELECT member_id, member_name, country, tier_code FROM TGT_MEMBER_PHIL
+        UNION ALL
+        SELECT member_id, member_name, country, tier_code FROM TGT_MEMBER_CAN
+    ) AS MEMBER_PROFILES
+    GROUP BY member_id
+    HAVING COUNT(*) = 1
 )
 
 SELECT
