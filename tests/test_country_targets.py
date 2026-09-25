@@ -2,20 +2,7 @@ from datetime import datetime
 
 import pandas as pd
 
-
-def get_latest_members(df: pd.DataFrame) -> pd.DataFrame:
-    """Return the latest record for each member."""
-    return (
-        df.sort_values(
-            ["ingestion_timestamp", "enrollment_date", "source_file"],
-            ascending=[False, False, False],
-        )
-        .drop_duplicates(
-            subset=["member_id", "member_name"],
-            keep="first",
-        )
-        .reset_index(drop=True)
-    )
+from src.transform_members import get_latest_members, split_members_by_country
 
 
 def test_latest_record_wins():
@@ -30,7 +17,7 @@ def test_latest_record_wins():
                 "source_file": "USA.xlsx",
             },
             {
-                "member_id": "101",
+                "member_id": "202",
                 "member_name": "John Smith",
                 "country": "IND",
                 "ingestion_timestamp": datetime(2026, 9, 25),
@@ -44,6 +31,7 @@ def test_latest_record_wins():
 
     assert len(result) == 1
     assert result.iloc[0]["country"] == "IND"
+    assert result.iloc[0]["member_id"] == "202"
 
 
 def test_different_members_with_same_id_are_kept_separately():
@@ -107,3 +95,17 @@ def test_latest_record_is_selected_when_multiple_records_exist():
 
     assert len(result) == 1
     assert result.iloc[0]["country"] == "IND"
+
+
+def test_country_split_supports_assessment_countries():
+    members = pd.DataFrame(
+        [
+            {"member_id": country, "member_name": country, "country": country}
+            for country in ["AUS", "IND", "USA", "PHIL", "CAN"]
+        ]
+    )
+
+    result = split_members_by_country(members)
+
+    assert set(result) == {"AUS", "IND", "USA", "PHIL", "CAN"}
+    assert all(len(country_members) == 1 for country_members in result.values())
