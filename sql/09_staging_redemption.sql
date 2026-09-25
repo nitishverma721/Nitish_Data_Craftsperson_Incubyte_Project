@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE STG_REDEMPTION (
+CREATE TABLE IF NOT EXISTS STG_REDEMPTION (
     member_id            VARCHAR(18) NOT NULL,
     feed_date            DATE NOT NULL,
     transaction_id       VARCHAR(100) NOT NULL,
